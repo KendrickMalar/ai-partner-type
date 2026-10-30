@@ -163,7 +163,7 @@ export class ArenaView {
     this.scene.fog = new THREE.Fog(0x1b1d2e, 30, 70);
 
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 200);
-    this.camera.position.set(0, 13, 17);
+    this.camera.position.set(0, 9, 12);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
     this.controls.autoRotate = true;
@@ -417,6 +417,19 @@ export class ArenaView {
       return b.life > 0;
     });
 
+    // カメラは生き残っているBotの中心を追う
+    const alive = [...this.bots.values()].filter((b) => !b.ko);
+    if (alive.length) {
+      const cx = alive.reduce((v, b) => v + b.group.position.x, 0) / alive.length;
+      const cz = alive.reduce((v, b) => v + b.group.position.z, 0) / alive.length;
+      const k = Math.min(1, dt * 2);
+      const dx = (cx - this.controls.target.x) * k;
+      const dz = (cz - this.controls.target.z) * k;
+      this.controls.target.x += dx;
+      this.controls.target.z += dz;
+      this.camera.position.x += dx;
+      this.camera.position.z += dz;
+    }
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
   }
