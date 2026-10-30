@@ -53,6 +53,8 @@ import { withBase } from "../lib/paths";
   import { isTypeCode, type LobbyPlayer, type ServerMessage } from "../../worker/src/protocol";
 
   const WS_URL = import.meta.env.PUBLIC_ARENA_URL || "ws://127.0.0.1:8787/ws";
+  // 試合のテンポ（シミュレーション時間をこの倍率で再生する）
+  const SPEED = 1.5;
   const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
   const show = (id: string, on: boolean) => ($(id).hidden = !on);
 
@@ -70,7 +72,7 @@ import { withBase } from "../lib/paths";
   function loop() {
     if (battle && Date.now() >= startTime && !battle.over) {
       // 経過時間ぶんのステップまで進める（タブを裏に回して戻っても、ほかの人と同じ場面に追いつく）
-      const due = Math.floor((Date.now() - startTime) / 1000 / TICK);
+      const due = Math.floor(((Date.now() - startTime) / 1000) * SPEED / TICK);
       const events: BattleEvent[] = [];
       while (steps < due && !battle.over) {
         steps++;
