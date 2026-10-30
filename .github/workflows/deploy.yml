@@ -26,6 +26,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+        env:
+          PUBLIC_ARENA_URL: wss://ai-partner-type-arena.kuno-tasks.workers.dev/ws
       - run: npm run check-dist
       - uses: actions/upload-pages-artifact@v3
         with:

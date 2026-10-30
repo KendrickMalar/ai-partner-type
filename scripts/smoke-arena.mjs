@@ -11,7 +11,7 @@ function client(name, code) {
 
 const a = client("アリス\u0000", "STVB");
 const b = client("ボブ", "WCGD");
-await new Promise((r) => setTimeout(r, 1000));
+await new Promise((r) => setTimeout(r, 4000));
 a.ws.send(JSON.stringify({ type: "ready" }));
 await new Promise((r) => setTimeout(r, 300));
 b.ws.send(JSON.stringify({ type: "ready" }));
