@@ -1,0 +1,94 @@
+---
+import Base from "../../layouts/Base.astro";
+import { AXES, sidesOf } from "../../data/axes";
+import { TYPES } from "../../data/types";
+import { robotColor, robotSvg } from "../../lib/robot";
+import { typeCodes } from "../../lib/scoring";
+import { shareUrl } from "../../lib/share";
+import { withBase } from "../../lib/paths";
+
+export function getStaticPaths() {
+  return typeCodes().map((code) => ({ params: { code } }));
+}
+
+const { code } = Astro.params as { code: string };
+const t = TYPES[code];
+const sides = sidesOf(code);
+const color = robotColor(code);
+---
+
+<Base title={t.name} description={`${t.catch}。あなたに合うAIパートナーを20問で診断。`} ogImage={`og/${code}.png`} accent={color}>
+  <p class="top-cta"><a class="button secondary" href={withBase("quiz/")}>自分も診断する</a></p>
+  <section class="hero">
+    <p class="lead">あなたに合うAIパートナーは</p>
+    <div class="robot" set:html={robotSvg(code)} />
+    <h1>{t.name}</h1>
+    <p class="catch">{t.catch}</p>
+  </section>
+
+  <section class="axes">
+    {AXES.map((axis, i) => (
+      <div class="axis" data-axis={axis.id}>
+        <div class="labels">
+          <span class:list={["side", { on: sides[i] }]}>{axis.pos.label}</span>
+          <span class="name">{axis.name}</span>
+          <span class:list={["side", { on: !sides[i] }]}>{axis.neg.label}</span>
+        </div>
+        <div class="track"><div class="marker" style={`left: ${sides[i] ? 25 : 75}%`} /></div>
+        <p class="desc">{sides[i] ? axis.pos.desc : axis.neg.desc}</p>
+      </div>
+    ))}
+  </section>
+
+  <section class="body">
+    <h2>どんなパートナー？</h2>
+    {t.body.map((p) => <p>{p}</p>)}
+    <h2>このAIと相性のいい使い方</h2>
+    <ul>{t.uses.map((u) => <li>{u}</li>)}</ul>
+  </section>
+
+  <section class="actions">
+    <a class="button share" href={shareUrl(code)} target="_blank" rel="noopener">Xでシェアする</a>
+    <a class="button secondary" href={withBase("quiz/")}>もう一度診断する</a>
+    <a href={withBase("types/")}>16タイプ一覧を見る</a>
+  </section>
+</Base>
+
+<script>
+  import { AXES } from "../../data/axes";
+  import { parseScores } from "../../lib/share";
+
+  // 診断した本人だけ、点数に合わせてマーカーを動かす。共有リンク（クエリなし）はタイプ側の固定表示
+  const scores = parseScores(location.search);
+  if (scores) {
+    for (const axis of AXES) {
+      const marker = document.querySelector<HTMLElement>(`.axis[data-axis="${axis.id}"] .marker`);
+      if (marker) marker.style.left = `${((10 - scores[axis.id]) / 20) * 100}%`;
+    }
+  }
+</script>
+
+<style>
+  .top-cta { text-align: right; margin: 0; }
+  .top-cta .button { padding: 8px 18px; font-size: 0.9rem; }
+  .hero { text-align: center; }
+  .lead { color: var(--muted); font-weight: 700; margin: 8px 0 0; }
+  .hero .robot { width: 220px; margin: 0 auto; }
+  h1 { font-size: 1.9rem; margin: 4px 0; color: var(--ink); }
+  .catch { font-weight: 700; margin: 0 0 16px; }
+  .axes { background: var(--card); border-radius: 18px; padding: 16px 20px; display: grid; gap: 14px; }
+  .labels { display: flex; justify-content: space-between; font-size: 0.9rem; color: var(--muted); }
+  .labels .name { font-size: 0.8rem; }
+  .side.on { color: var(--accent); font-weight: 700; }
+  .track { position: relative; height: 10px; border-radius: 999px; background: #eee6da; margin: 4px 0; }
+  .marker {
+    position: absolute; top: 50%; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--accent); border: 3px solid #fff; box-shadow: 0 0 0 2px var(--accent);
+    transform: translate(-50%, -50%);
+  }
+  .desc { margin: 0; font-size: 0.9rem; }
+  .body h2 { font-size: 1.15rem; border-left: 5px solid var(--accent); padding-left: 10px; margin-top: 28px; }
+  .actions { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 32px; }
+  .actions .button { width: 100%; max-width: 320px; }
+  .share { background: #111; }
+</style>

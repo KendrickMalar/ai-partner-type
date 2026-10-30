@@ -1,0 +1,81 @@
+---
+import Base from "../layouts/Base.astro";
+import { CHOICES, QUESTIONS } from "../data/questions";
+---
+
+<Base title="診断" description="AIへの好みを20問で答えて、あなたに合うAIパートナーを診断します。">
+  <section class="quiz" data-total={QUESTIONS.length}>
+    <div class="progress"><div class="bar"></div></div>
+    <p class="count"><span class="now">1</span> / {QUESTIONS.length}</p>
+    <h1 class="question">{QUESTIONS[0].text}</h1>
+    <div class="choices">
+      {CHOICES.map((label, i) => <button type="button" class={`choice c${i}`} data-choice={i}>{label}</button>)}
+    </div>
+    <button type="button" class="back" disabled>ひとつ前に戻る</button>
+    <noscript><p>この診断を使うには JavaScript を有効にしてください。</p></noscript>
+  </section>
+</Base>
+
+<script>
+  import { QUESTIONS } from "../data/questions";
+  import { answerValue, scoreAnswers } from "../lib/scoring";
+  import { formatScores } from "../lib/share";
+  import { withBase } from "../lib/paths";
+
+  // 回答はこのページの中だけで持つ（保存・送信しない）
+  const answers: number[] = [];
+  const root = document.querySelector<HTMLElement>(".quiz")!;
+  const questionEl = root.querySelector<HTMLElement>(".question")!;
+  const nowEl = root.querySelector<HTMLElement>(".now")!;
+  const barEl = root.querySelector<HTMLElement>(".bar")!;
+  const backEl = root.querySelector<HTMLButtonElement>(".back")!;
+  const choiceEls = [...root.querySelectorAll<HTMLButtonElement>(".choice")];
+
+  function render() {
+    const i = answers.length;
+    questionEl.textContent = QUESTIONS[i].text;
+    nowEl.textContent = String(i + 1);
+    barEl.style.width = `${(i / QUESTIONS.length) * 100}%`;
+    backEl.disabled = i === 0;
+  }
+
+  function finish() {
+    const { code, scores } = scoreAnswers(answers);
+    choiceEls.forEach((el) => (el.disabled = true));
+    location.href = withBase(`types/${code}/?s=${formatScores(scores)}`);
+  }
+
+  choiceEls.forEach((el) =>
+    el.addEventListener("click", () => {
+      if (answers.length >= QUESTIONS.length) return;
+      answers.push(answerValue(Number(el.dataset.choice) as 0 | 1 | 2 | 3 | 4));
+      el.blur();
+      if (answers.length === QUESTIONS.length) finish();
+      else render();
+    }),
+  );
+
+  backEl.addEventListener("click", () => {
+    if (answers.length === 0) return;
+    answers.pop();
+    render();
+  });
+</script>
+
+<style>
+  .quiz { text-align: center; }
+  .progress { height: 8px; background: #eee6da; border-radius: 999px; overflow: hidden; }
+  .bar { height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+  .count { color: var(--muted); margin: 8px 0 0; }
+  .question { font-size: 1.35rem; line-height: 1.5; min-height: 4.5em; display: flex; align-items: center; justify-content: center; margin: 16px 0; }
+  .choices { display: flex; flex-direction: column; gap: 10px; }
+  .choice {
+    font: inherit; font-weight: 700; padding: 14px; border-radius: 14px; cursor: pointer;
+    background: var(--card); color: var(--ink); border: 2px solid #e2d9cc;
+  }
+  .choice:hover, .choice:focus-visible { border-color: var(--accent); }
+  .c0 { border-color: #c9b8f2; }
+  .c4 { border-color: #c9b8f2; }
+  .back { margin-top: 20px; background: none; border: none; color: var(--muted); font: inherit; cursor: pointer; text-decoration: underline; }
+  .back:disabled { visibility: hidden; }
+</style>

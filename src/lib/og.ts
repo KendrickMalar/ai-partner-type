@@ -3,8 +3,7 @@ import { join } from "node:path";
 import { AXES, sidesOf } from "../data/axes";
 import { TYPES } from "../data/types";
 import { robotColor, robotSvg } from "./robot";
-
-export const SITE_NAME = "AIパートナータイプ診断";
+import { SITE_NAME } from "./share";
 
 // ビルド時はバンドル先に移るため、import.meta.url ではなくプロジェクトルートから辿る。
 // 可変フォントは resvg で太さが効かないため、wght=700 で固定した静的フォントを使う
