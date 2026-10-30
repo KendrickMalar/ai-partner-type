@@ -1,0 +1,242 @@
+---
+import { SITE_NAME } from "../lib/share";
+import { withBase } from "../lib/paths";
+---
+
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>戦場 | {SITE_NAME}</title>
+    <meta name="description" content="診断したAIパートナーBotどうしが、3Dの戦場で最後の1体になるまで戦います。" />
+    <link rel="icon" href={withBase("favicon.svg")} type="image/svg+xml" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+    <header class="bar">
+      <a href={withBase("/")}>{SITE_NAME}</a>
+      <span class="status" id="status">接続中…</span>
+    </header>
+
+    <section class="panel" id="lobby" hidden>
+      <h1>戦場 <span id="room"></span></h1>
+      <p class="hint" id="countdown">2体以上が「準備OK」になると、30秒後に戦闘開始</p>
+      <ul id="players"></ul>
+      <button class="btn" id="ready">準備OK！</button>
+    </section>
+
+    <section class="center" id="banner" hidden></section>
+
+    <section class="panel result" id="result" hidden>
+      <h1>結果発表</h1>
+      <ol id="ranking"></ol>
+      <a class="btn share" id="share" target="_blank" rel="noopener">結果をXでシェア</a>
+      <button class="btn" id="again">もう一度戦う</button>
+      <a class="link" id="back" href={withBase("/")}>診断ページへ</a>
+    </section>
+
+    <section class="panel" id="nocode" hidden>
+      <h1>まずは診断から</h1>
+      <p>戦場には、診断で出たBotで参加します。</p>
+      <a class="btn" href={withBase("quiz/")}>診断をはじめる</a>
+    </section>
+  </body>
+</html>
+
+<script>
+  import { Battle, TICK, type BattleEvent, type Entrant } from "../lib/battle";
+  import { ArenaView } from "../lib/arena3d";
+  import { TYPES } from "../data/types";
+  import { loadName } from "../lib/player";
+  import { SITE_URL, HASHTAG } from "../lib/share";
+  import { isTypeCode, type LobbyPlayer, type ServerMessage } from "../../worker/src/protocol";
+
+  const WS_URL = import.meta.env.PUBLIC_ARENA_URL || "ws://127.0.0.1:8787/ws";
+  const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+  const show = (id: string, on: boolean) => ($(id).hidden = !on);
+
+  const code = new URLSearchParams(location.search).get("code");
+  const view = new ArenaView($("scene") as unknown as HTMLCanvasElement);
+
+  let battle: Battle | null = null;
+  let entrants: Entrant[] = [];
+  let myId: string | null = null;
+  let lobby: { players: LobbyPlayer[]; countdownEnd: number | null; offset: number } = { players: [], countdownEnd: null, offset: 0 };
+  let steps = 0;
+  let startTime = 0; // ローカル時計での開始時刻
+  let iAmReady = false;
+
+  function loop() {
+    if (battle && Date.now() >= startTime && !battle.over) {
+      // 経過時間ぶんのステップまで進める（タブを裏に回して戻っても、ほかの人と同じ場面に追いつく）
+      const due = Math.floor((Date.now() - startTime) / 1000 / TICK);
+      const events: BattleEvent[] = [];
+      while (steps < due && !battle.over) {
+        steps++;
+        events.push(...battle.step());
+      }
+      if (events.length < 60) view.effects(events, battle);
+      if (battle.over) setTimeout(showResult, 1800);
+    } else if (battle && Date.now() < startTime) {
+      const s = Math.ceil((startTime - Date.now()) / 1000);
+      setBanner(s > 0 ? String(s) : "");
+    }
+    if (battle && Date.now() >= startTime && !battle.over) setBanner("");
+    renderCountdown();
+    view.frame(battle);
+    requestAnimationFrame(loop);
+  }
+
+  function setBanner(text: string) {
+    const el = $("banner");
+    el.textContent = text;
+    el.hidden = !text;
+  }
+
+  function renderLobby() {
+    const list = $("players");
+    list.replaceChildren(
+      ...lobby.players.map((p) => {
+        const li = document.createElement("li");
+        if (p.id === myId) li.className = "me";
+        const name = document.createElement("strong");
+        name.textContent = p.name;
+        const type = document.createElement("span");
+        type.textContent = TYPES[p.code]?.name ?? "";
+        const ready = document.createElement("em");
+        ready.textContent = p.ready ? "準備OK" : "待機中";
+        if (p.ready) ready.className = "ok";
+        li.append(name, type, ready);
+        return li;
+      }),
+    );
+    const me = lobby.players.find((p) => p.id === myId);
+    iAmReady = !!me?.ready;
+    ($("ready") as HTMLButtonElement).disabled = iAmReady;
+    $("ready").textContent = iAmReady ? "ほかの人を待っています…" : "準備OK！";
+    if (!battle) view.showLobby(lobby.players, myId);
+  }
+
+  function renderCountdown() {
+    const el = $("countdown");
+    if (lobby.countdownEnd) {
+      const s = Math.max(0, Math.ceil((lobby.countdownEnd - (Date.now() + lobby.offset)) / 1000));
+      el.textContent = `あと ${s} 秒で戦闘開始（準備OKのBotだけが戦います）`;
+    } else {
+      el.textContent = lobby.players.length < 2 ? "ほかの参加者を待っています。2体以上が「準備OK」で戦闘開始" : "2体以上が「準備OK」になると、30秒後に戦闘開始";
+    }
+  }
+
+  function showResult() {
+    if (!battle) return;
+    const ranked = [...battle.fighters].sort((a, b) => a.place - b.place);
+    $("ranking").replaceChildren(
+      ...ranked.map((f) => {
+        const li = document.createElement("li");
+        if (f.id === myId) li.className = "me";
+        li.textContent = `${f.place}位 ${f.name}（${TYPES[f.code].name}）`;
+        return li;
+      }),
+    );
+    const mine = battle.fighters.find((f) => f.id === myId);
+    const winner = ranked[0];
+    const text = mine
+      ? `私のBot「${mine.name}」（${TYPES[mine.code].name}）は${battle.fighters.length}体中${mine.place}位でした${mine.place === 1 ? "！優勝！" : ""}`
+      : `「${winner.name}」（${TYPES[winner.code].name}）が${battle.fighters.length}体の戦いを制しました`;
+    const params = new URLSearchParams({ text, url: SITE_URL, hashtags: HASHTAG });
+    ($("share") as HTMLAnchorElement).href = `https://x.com/intent/post?${params}`;
+    show("result", true);
+    $("status").textContent = "結果発表";
+  }
+
+  function backToLobby() {
+    battle = null;
+    show("result", false);
+    show("lobby", true);
+    renderLobby();
+  }
+
+  function connect() {
+    const ws = new WebSocket(WS_URL);
+    ws.addEventListener("open", () => {
+      $("status").textContent = "接続しました";
+      const name = loadName() || TYPES[code!].name;
+      ws.send(JSON.stringify({ type: "join", code, name }));
+    });
+    ws.addEventListener("message", (e) => {
+      const msg = JSON.parse(e.data) as ServerMessage;
+      if (msg.type === "welcome") {
+        myId = msg.id;
+        $("room").textContent = `#${msg.room}`;
+        show("lobby", true);
+      } else if (msg.type === "lobby") {
+        lobby = { players: msg.players, countdownEnd: msg.countdownEnd, offset: msg.now - Date.now() };
+        if (!battle) renderLobby();
+      } else if (msg.type === "start") {
+        // 戦闘中の人に別の戦闘開始が届いたら無視（見ている途中の戦いを優先）
+        if (battle && !battle.over) return;
+        entrants = msg.entrants;
+        battle = new Battle(entrants, msg.seed);
+        startTime = Date.now() + (msg.startAt - msg.now);
+        steps = 0;
+        show("lobby", false);
+        show("result", false);
+        view.startBattle(battle, myId);
+        $("status").textContent = entrants.some((e) => e.id === myId) ? "戦闘中" : "観戦中";
+      } else if (msg.type === "error") {
+        $("status").textContent = msg.message;
+      }
+    });
+    ws.addEventListener("close", () => {
+      $("status").textContent = "接続が切れました。ページを再読み込みしてください";
+    });
+    $("ready").addEventListener("click", () => ws.send(JSON.stringify({ type: "ready" })));
+    $("again").addEventListener("click", () => {
+      backToLobby();
+      ws.send(JSON.stringify({ type: "ready" }));
+    });
+  }
+
+  if (!isTypeCode(code)) {
+    show("nocode", true);
+    $("status").textContent = "";
+  } else {
+    connect();
+  }
+  requestAnimationFrame(loop);
+</script>
+
+<style is:global>
+  :root { font-family: "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif; color: #fff; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1d2e; }
+  [hidden] { display: none !important; }
+  #scene { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  .bar { position: fixed; top: 0; left: 0; right: 0; display: flex; justify-content: space-between; padding: 10px 14px; font-weight: 700; font-size: 0.9rem; pointer-events: none; }
+  .bar a { color: #fff; text-decoration: none; pointer-events: auto; }
+  .status { color: #ffd166; }
+  .panel {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%); width: min(420px, calc(100% - 24px));
+    background: rgba(27, 29, 46, 0.88); border: 2px solid rgba(255, 255, 255, 0.15); border-radius: 18px; padding: 14px 16px;
+    backdrop-filter: blur(6px); max-height: 60vh; overflow: auto;
+  }
+  .panel h1 { margin: 0 0 4px; font-size: 1.2rem; }
+  .hint { margin: 0 0 8px; font-size: 0.85rem; color: #c9cbe0; }
+  ul, ol { list-style: none; padding: 0; margin: 0 0 12px; display: grid; gap: 4px; }
+  li { display: flex; gap: 8px; align-items: baseline; font-size: 0.9rem; padding: 4px 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.06); }
+  li.me { background: rgba(255, 209, 102, 0.25); }
+  li span { color: #c9cbe0; font-size: 0.8rem; flex: 1; }
+  li em { font-style: normal; font-size: 0.8rem; color: #a0a4b8; }
+  li em.ok { color: #4ade80; font-weight: 700; }
+  .btn {
+    display: block; width: 100%; border: none; cursor: pointer; font: inherit; font-weight: 800; font-size: 1.05rem;
+    padding: 12px; border-radius: 999px; color: #fff; text-align: center; text-decoration: none; margin-top: 8px;
+    background: linear-gradient(135deg, #ff4d6d, #ff9e00);
+  }
+  .btn:disabled { background: #44475e; cursor: default; }
+  .btn.share { background: #000; border: 1px solid #555; }
+  .link { display: block; text-align: center; color: #c9cbe0; margin-top: 10px; font-size: 0.85rem; }
+  .center { position: fixed; top: 40%; left: 50%; transform: translate(-50%, -50%); font-size: 6rem; font-weight: 900; text-shadow: 0 4px 0 #ff4d6d; pointer-events: none; }
+  .result ol li { font-size: 0.95rem; }
+</style>

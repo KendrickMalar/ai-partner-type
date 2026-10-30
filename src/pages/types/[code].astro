@@ -48,6 +48,7 @@ const color = robotColor(code);
   </section>
 
   <section class="actions">
+    <a class="button battle" href={withBase(`arena/?code=${code}`)}>戦闘に参加させる</a>
     <a class="button share" href={shareUrl(code)} target="_blank" rel="noopener">Xでシェアする</a>
     <a class="button secondary" href={withBase("quiz/")}>もう一度診断する</a>
     <a href={withBase("types/")}>16タイプ一覧を見る</a>
@@ -57,9 +58,15 @@ const color = robotColor(code);
 <script>
   import { AXES } from "../../data/axes";
   import { parseScores } from "../../lib/share";
+  import { loadName } from "../../lib/player";
 
   // 診断した本人だけ、点数に合わせてマーカーを動かす。共有リンク（クエリなし）はタイプ側の固定表示
   const scores = parseScores(location.search);
+  // 診断した本人には、名前入りで発表する
+  const name = loadName();
+  if (scores && name) {
+    document.querySelector(".lead")!.textContent = `${name}さんに合うAIパートナーは`;
+  }
   if (scores) {
     for (const axis of AXES) {
       const marker = document.querySelector<HTMLElement>(`.axis[data-axis="${axis.id}"] .marker`);
@@ -91,4 +98,5 @@ const color = robotColor(code);
   .actions { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 32px; }
   .actions .button { width: 100%; max-width: 320px; }
   .share { background: #111; }
+  .battle { background: linear-gradient(135deg, #ff4d6d, #ff9e00); font-size: 1.1rem; }
 </style>

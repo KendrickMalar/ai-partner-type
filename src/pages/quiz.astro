@@ -12,6 +12,12 @@ import { CHOICES, QUESTIONS } from "../data/questions";
       {CHOICES.map((label, i) => <button type="button" class={`choice c${i}`} data-choice={i}>{label}</button>)}
     </div>
     <button type="button" class="back" disabled>ひとつ前に戻る</button>
+    <form class="name-form" hidden>
+      <h1>結果発表の前に、<br />名前を教えてね</h1>
+      <p>あなたのBotの名前になります。戦場でほかの人にも表示されます。</p>
+      <input name="name" type="text" maxlength="12" placeholder="12文字まで" autocomplete="nickname" required />
+      <button type="submit" class="button">結果を見る</button>
+    </form>
     <noscript><p>この診断を使うには JavaScript を有効にしてください。</p></noscript>
   </section>
 </Base>
@@ -21,6 +27,7 @@ import { CHOICES, QUESTIONS } from "../data/questions";
   import { answerValue, scoreAnswers } from "../lib/scoring";
   import { formatScores } from "../lib/share";
   import { withBase } from "../lib/paths";
+  import { loadName, saveName } from "../lib/player";
 
   // 回答はこのページの中だけで持つ（保存・送信しない）
   const answers: number[] = [];
@@ -39,11 +46,25 @@ import { CHOICES, QUESTIONS } from "../data/questions";
     backEl.disabled = i === 0;
   }
 
+  const formEl = root.querySelector<HTMLFormElement>(".name-form")!;
+  const nameInput = formEl.querySelector<HTMLInputElement>("input")!;
+
+  // 20問のあと、結果発表の前に名前を聞く
   function finish() {
-    const { code, scores } = scoreAnswers(answers);
     choiceEls.forEach((el) => (el.disabled = true));
-    location.href = withBase(`types/${code}/?s=${formatScores(scores)}`);
+    root.querySelectorAll<HTMLElement>(".progress, .count, .question, .choices, .back").forEach((el) => (el.hidden = true));
+    formEl.hidden = false;
+    nameInput.value = loadName();
+    nameInput.focus();
   }
+
+  formEl.addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (!nameInput.value.trim()) return;
+    saveName(nameInput.value);
+    const { code, scores } = scoreAnswers(answers);
+    location.href = withBase(`types/${code}/?s=${formatScores(scores)}`);
+  });
 
   choiceEls.forEach((el) =>
     el.addEventListener("click", () => {
@@ -78,4 +99,7 @@ import { CHOICES, QUESTIONS } from "../data/questions";
   .c4 { border-color: #c9b8f2; }
   .back { margin-top: 20px; background: none; border: none; color: var(--muted); font: inherit; cursor: pointer; text-decoration: underline; }
   .back:disabled { visibility: hidden; }
+  [hidden] { display: none !important; }
+  .name-form h1 { font-size: 1.5rem; line-height: 1.4; }
+  .name-form input { width: 100%; font: inherit; font-size: 1.2rem; padding: 12px 16px; border-radius: 14px; border: 2px solid var(--accent); margin: 8px 0 16px; text-align: center; }
 </style>
