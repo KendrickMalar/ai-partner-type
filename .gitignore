@@ -3,3 +3,4 @@ dist/
 .astro/
 .claude/worktrees/
 .DS_Store
+.wrangler/

@@ -20,6 +20,8 @@ interface Bot {
   windup: number;
   lunge: number;
   ko: number;
+  glow: number;
+  shield: THREE.Mesh;
   mats: THREE.MeshStandardMaterial[];
 }
 
@@ -146,6 +148,7 @@ export class ArenaView {
   private bots = new Map<string, Bot>();
   private floaters: Floater[] = [];
   private beams: { line: THREE.Line; life: number }[] = [];
+  private rings: { mesh: THREE.Mesh; life: number }[] = [];
   private platform: THREE.Mesh;
   private danger: THREE.Mesh;
   private zoneRing: THREE.Mesh;
@@ -257,10 +260,17 @@ export class ArenaView {
     label.position.y = 3.1;
     label.renderOrder = 5;
     group.add(label);
+    const shield = new THREE.Mesh(
+      new THREE.SphereGeometry(1.5, 24, 16),
+      new THREE.MeshBasicMaterial({ color: 0x5ce1e6, transparent: true, opacity: 0.25 }),
+    );
+    shield.position.y = 1.2;
+    shield.visible = false;
+    group.add(shield);
     this.scene.add(group);
     const bot: Bot = {
       id, group, body, label, labelCtx: canvas.getContext("2d")!, labelTex, name, mine,
-      hpShown: -1, flash: 0, windup: 0, lunge: 0, ko: 0, mats,
+      hpShown: -1, flash: 0, windup: 0, lunge: 0, ko: 0, glow: 0, shield, mats,
     };
     this.bots.set(id, bot);
     this.drawLabel(bot, 1, false);
@@ -321,7 +331,7 @@ export class ArenaView {
     for (const ev of events) {
       if (ev.t === "windup") {
         const b = this.bots.get(ev.id);
-        if (b) b.windup = 0.4;
+        if (b) b.windup = 0.27;
       } else if (ev.t === "hit" || ev.t === "counter") {
         const from = this.bots.get(ev.id);
         const to = this.bots.get(ev.target);
@@ -331,6 +341,18 @@ export class ArenaView {
         this.beam(from, to, ev.t === "counter" ? 0x5ce1e6 : ev.t === "hit" && ev.crit ? 0xffd166 : 0xff6b6b);
         const crit = ev.t === "hit" && ev.crit;
         this.float(to, crit ? `会心 ${Math.round(ev.dmg)}` : ev.t === "counter" ? `反撃 ${Math.round(ev.dmg)}` : String(Math.round(ev.dmg)), crit ? "#ffd166" : ev.t === "counter" ? "#5ce1e6" : "#ffffff", crit ? 1.6 : 1);
+      } else if (ev.t === "skill") {
+        const b = this.bots.get(ev.id);
+        if (b) {
+          b.glow = 0.6;
+          this.float(b, ev.name, "#ffd166", 2.2, 1.6);
+          this.pulse(b);
+        }
+        const to = ev.target ? this.bots.get(ev.target) : undefined;
+        if (b && to) this.beam(b, to, 0xffd166);
+      } else if (ev.t === "heal") {
+        const b = this.bots.get(ev.id);
+        if (b && ev.amount > 0) this.float(b, `+${ev.amount}`, "#4ade80", 1.2);
       } else if (ev.t === "miss") {
         const b = this.bots.get(ev.target);
         if (b) this.float(b, "ミス", "#a0a4b8", 0.8);
@@ -353,13 +375,24 @@ export class ArenaView {
     this.beams.push({ line, life: 0.25 });
   }
 
-  private float(bot: Bot, text: string, color: string, scale: number) {
-    const s = textSprite(text, color);
+  private pulse(bot: Bot) {
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(0.8, 1, 48),
+      new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, side: THREE.DoubleSide }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.copy(bot.group.position).setY(0.08);
+    this.scene.add(ring);
+    this.rings.push({ mesh: ring, life: 0.6 });
+  }
+
+  private float(bot: Bot, text: string, color: string, scale: number, life = 1.1) {
+    const s = textSprite(text, color, text.length > 4 ? 40 : 64);
     s.scale.multiplyScalar(scale);
     s.position.copy(bot.group.position).setY(3.6);
     s.position.x += (Math.random() - 0.5) * 0.6;
     this.scene.add(s);
-    this.floaters.push({ sprite: s, life: 1.1, vy: 1.4 });
+    this.floaters.push({ sprite: s, life, vy: 1.4 });
   }
 
   // 毎フレーム: シミュレーションの位置に寄せて描く
@@ -377,17 +410,22 @@ export class ArenaView {
         const target = f.target ? battle!.fighters.find((x) => x.id === f.target) : undefined;
         if (target && f.alive) bot.group.lookAt(target.x, 0, target.z);
         this.drawLabel(bot, f.hp / f.maxHp, f.alive);
+        // 守り・反射は泡、しびれは小刻みにふるえる
+        bot.shield.visible = f.alive && (f.shield > 0 || f.reflect > 0);
+        (bot.shield.material as THREE.MeshBasicMaterial).color.setHex(f.reflect > 0 ? 0xff9e00 : 0x5ce1e6);
+        bot.body.rotation.y = f.stun > 0 ? Math.sin(t * 40) * 0.15 : 0;
       }
       // 待機中・移動中は小さく弾む
       bot.body.position.y = bot.ko ? bot.body.position.y : Math.abs(Math.sin(t * 6 + bot.id.charCodeAt(0))) * 0.08;
       // ため: ふくらむ。攻撃: 前に出る
       bot.windup = Math.max(0, bot.windup - dt);
       bot.lunge = Math.max(0, bot.lunge - dt);
-      const swell = 1.1 * (bot.windup > 0 ? 1 + (0.4 - bot.windup) * 0.5 : 1);
+      const swell = 1.1 * (bot.windup > 0 ? 1 + (0.27 - bot.windup) * 0.75 : 1);
       bot.body.scale.setScalar(swell);
       bot.body.position.z = bot.lunge > 0 ? Math.sin((bot.lunge / 0.25) * Math.PI) * 0.6 : 0;
       bot.flash = Math.max(0, bot.flash - dt);
-      for (const m of bot.mats) m.emissive.setHex(bot.flash > 0 ? 0xff2d55 : bot.windup > 0 ? 0x553300 : 0x000000);
+      bot.glow = Math.max(0, bot.glow - dt);
+      for (const m of bot.mats) m.emissive.setHex(bot.flash > 0 ? 0xff2d55 : bot.glow > 0 ? 0x806000 : bot.windup > 0 ? 0x553300 : 0x000000);
       const star = bot.body.getObjectByName("star");
       if (star) star.rotation.y += dt * 3;
       if (bot.ko) {
@@ -409,6 +447,13 @@ export class ArenaView {
       f.sprite.material.opacity = Math.min(1, f.life * 2);
       if (f.life <= 0) this.scene.remove(f.sprite);
       return f.life > 0;
+    });
+    this.rings = this.rings.filter((r) => {
+      r.life -= dt;
+      r.mesh.scale.setScalar(1 + (0.6 - r.life) * 6);
+      (r.mesh.material as THREE.MeshBasicMaterial).opacity = r.life / 0.6;
+      if (r.life <= 0) this.scene.remove(r.mesh);
+      return r.life > 0;
     });
     this.beams = this.beams.filter((b) => {
       b.life -= dt;

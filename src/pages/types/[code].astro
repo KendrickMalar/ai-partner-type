@@ -2,6 +2,7 @@
 import Base from "../../layouts/Base.astro";
 import { AXES, sidesOf } from "../../data/axes";
 import { TYPES } from "../../data/types";
+import { SKILLS } from "../../data/skills";
 import { robotColor, robotSvg } from "../../lib/robot";
 import { typeCodes } from "../../lib/scoring";
 import { shareUrl } from "../../lib/share";
@@ -43,6 +44,8 @@ const color = robotColor(code);
   <section class="body">
     <h2>どんなパートナー？</h2>
     {t.body.map((p) => <p>{p}</p>)}
+    <h2>戦場での必殺技</h2>
+    <p class="skill"><strong>{SKILLS[code].name}</strong>：{SKILLS[code].desc}</p>
     <h2>このAIと相性のいい使い方</h2>
     <ul>{t.uses.map((u) => <li>{u}</li>)}</ul>
   </section>
@@ -98,5 +101,6 @@ const color = robotColor(code);
   .actions { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-top: 32px; }
   .actions .button { width: 100%; max-width: 320px; }
   .share { background: #111; }
+  .skill strong { color: var(--accent); font-size: 1.1rem; }
   .battle { background: linear-gradient(135deg, #ff4d6d, #ff9e00); font-size: 1.1rem; }
 </style>
