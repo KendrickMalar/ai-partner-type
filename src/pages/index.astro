@@ -1,0 +1,28 @@
+---
+import Base from "../layouts/Base.astro";
+import { robotSvg } from "../lib/robot";
+import { withBase } from "../lib/paths";
+
+const samples = ["SCVD", "STGB", "WCGD", "WTVB"];
+---
+
+<Base description="20問・約2分。あなたに合うAIパートナーを、16体のロボットから診断します。">
+  <section class="hero">
+    <div class="robots">
+      {samples.map((code) => <div class="robot" set:html={robotSvg(code)} />)}
+    </div>
+    <h1>あなたに合う<br />AIパートナーは？</h1>
+    <p>先回りしてほしい？ 頼んだことだけでいい？<br />ほめてほしい？ 辛口がいい？</p>
+    <p class="intro">AIへの好みを20問で答えると、16体のロボットから、あなたにぴったりのパートナーがわかります。</p>
+    <a class="button" href={withBase("quiz/")}>診断をはじめる（約2分）</a>
+    <p class="sub"><a href={withBase("types/")}>16タイプ一覧を見る</a></p>
+  </section>
+</Base>
+
+<style>
+  .hero { text-align: center; }
+  .robots { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 16px 0; }
+  h1 { font-size: 2rem; line-height: 1.3; margin: 16px 0; }
+  .sub { margin-top: 20px; }
+  .intro { text-align: left; }
+</style>

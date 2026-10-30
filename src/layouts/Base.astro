@@ -1,0 +1,74 @@
+---
+import { SITE_NAME, SITE_URL } from "../lib/share";
+import { withBase } from "../lib/paths";
+
+interface Props {
+  title?: string;
+  description: string;
+  ogImage?: string;
+  accent?: string;
+}
+
+const { title, description, ogImage = "og/SCGB.png", accent = "#7a5cd6" } = Astro.props;
+const fullTitle = title ? `${title} | ${SITE_NAME}` : SITE_NAME;
+const pageUrl = new URL(Astro.url.pathname, SITE_URL).href;
+const imageUrl = new URL(ogImage, SITE_URL).href;
+---
+
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    <link rel="icon" href={withBase("favicon.svg")} type="image/svg+xml" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={SITE_NAME} />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={pageUrl} />
+    <meta property="og:image" content={imageUrl} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body style={`--accent: ${accent}`}>
+    <header class="site-header">
+      <a href={withBase("/")}>{SITE_NAME}</a>
+    </header>
+    <main>
+      <slot />
+    </main>
+    <footer class="site-footer">
+      <a href={withBase("types/")}>16タイプ一覧</a>
+    </footer>
+  </body>
+</html>
+
+<style is:global>
+  :root {
+    --ink: #2b2d42;
+    --muted: #6c6f80;
+    --bg: #fffaf3;
+    --card: #ffffff;
+    font-family: "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.7;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column; }
+  main { flex: 1; width: 100%; max-width: 640px; margin: 0 auto; padding: 16px 20px 48px; }
+  a { color: var(--accent); }
+  .site-header, .site-footer { text-align: center; padding: 14px; font-weight: 700; }
+  .site-header a { color: var(--ink); text-decoration: none; }
+  .site-footer { font-size: 0.9rem; }
+  .button {
+    display: inline-block; border: none; cursor: pointer; font: inherit; font-weight: 700;
+    padding: 14px 28px; border-radius: 999px; background: var(--accent); color: #fff;
+    text-decoration: none; text-align: center;
+  }
+  .button.secondary { background: var(--card); color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+  .robot svg { display: block; width: 100%; height: auto; }
+</style>
