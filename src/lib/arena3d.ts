@@ -3,6 +3,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { sidesOf } from "../data/axes";
 import { arenaRadius, type Battle, type BattleEvent, type Fighter } from "./battle";
 import { robotColor } from "./robot";
+import { SKILLS } from "../data/skills";
 
 const INK = 0x2b2d42;
 
@@ -23,6 +24,40 @@ interface Bot {
   glow: number;
   shield: THREE.Mesh;
   mats: THREE.MeshStandardMaterial[];
+  code: string;
+  fists: THREE.Mesh[];
+  act: Act | null;
+  stars: THREE.Group;
+  mark: THREE.Mesh;
+  down: THREE.Sprite;
+}
+
+// 体の動き（演出だけ。勝敗の計算には関わらない）
+type ActKind =
+  | "jab" | "shot" | "tackle" | "spin" | "hop" | "lean"
+  | "spinFast" | "rise" | "triple" | "slam" | "swing" | "point" | "bigSlam" | "twirl" | "guard" | "shush" | "cheer" | "pulse" | "fire";
+interface Act {
+  kind: ActKind;
+  t: number;
+  dur: number;
+}
+
+interface Particle {
+  mesh: THREE.Mesh;
+  vel: THREE.Vector3;
+  life: number;
+  max: number;
+  gravity: number;
+}
+
+interface Projectile {
+  mesh: THREE.Mesh;
+  from: THREE.Vector3;
+  to: THREE.Vector3;
+  t: number;
+  dur: number;
+  arc: number;
+  onHit: () => void;
 }
 
 interface Floater {
@@ -36,7 +71,7 @@ function mat(color: number | string) {
 }
 
 // 診断のロボットと同じ部品の対応で、図形を組み合わせて3Dのロボットを作る
-function buildRobot(code: string): { body: THREE.Group; mats: THREE.MeshStandardMaterial[] } {
+function buildRobot(code: string): { body: THREE.Group; mats: THREE.MeshStandardMaterial[]; fists: THREE.Mesh[] } {
   const [ahead, cheer, steady, brief] = sidesOf(code);
   const color = robotColor(code);
   const g = new THREE.Group();
@@ -115,10 +150,17 @@ function buildRobot(code: string): { body: THREE.Group; mats: THREE.MeshStandard
     star.name = "star";
     g.add(star);
   }
+  // こぶし（攻撃の演出に使う）
+  const fists = [-1, 1].map((side) => {
+    const fist = new THREE.Mesh(new THREE.SphereGeometry(0.17, 16, 12), main);
+    fist.position.set(side * 0.6, 0.55, 0.15);
+    g.add(fist);
+    return fist;
+  });
   g.traverse((o) => {
     if (o instanceof THREE.Mesh) o.castShadow = true;
   });
-  return { body: g, mats };
+  return { body: g, mats, fists };
 }
 
 function textSprite(text: string, color: string, size = 64): THREE.Sprite {
@@ -148,7 +190,11 @@ export class ArenaView {
   private bots = new Map<string, Bot>();
   private floaters: Floater[] = [];
   private beams: { line: THREE.Line; life: number }[] = [];
-  private rings: { mesh: THREE.Mesh; life: number }[] = [];
+  private rings: { mesh: THREE.Mesh; life: number; max: number; grow: number }[] = [];
+  private particles: Particle[] = [];
+  private projectiles: Projectile[] = [];
+  private shake = 0;
+  private sparkGeo = new THREE.SphereGeometry(0.08, 6, 4);
   private platform: THREE.Mesh;
   private danger: THREE.Mesh;
   private zoneRing: THREE.Mesh;
@@ -247,7 +293,7 @@ export class ArenaView {
   }
 
   private addBot(id: string, name: string, code: string, mine: boolean): Bot {
-    const { body, mats } = buildRobot(code);
+    const { body, mats, fists } = buildRobot(code);
     const group = new THREE.Group();
     body.scale.setScalar(1.1);
     group.add(body);
@@ -267,10 +313,36 @@ export class ArenaView {
     shield.position.y = 1.2;
     shield.visible = false;
     group.add(shield);
+    // しびれ: 頭の上を回る星
+    const stars = new THREE.Group();
+    for (let i = 0; i < 3; i++) {
+      const st = new THREE.Mesh(new THREE.OctahedronGeometry(0.12), new THREE.MeshBasicMaterial({ color: 0xffd166 }));
+      st.position.set(Math.cos((i / 3) * Math.PI * 2) * 0.6, 0, Math.sin((i / 3) * Math.PI * 2) * 0.6);
+      stars.add(st);
+    }
+    stars.position.y = 2.6;
+    stars.visible = false;
+    group.add(stars);
+    // 弱点の印: 足元の赤い輪
+    const mark = new THREE.Mesh(
+      new THREE.RingGeometry(0.9, 1.1, 32),
+      new THREE.MeshBasicMaterial({ color: 0xff2d55, transparent: true, opacity: 0.8, side: THREE.DoubleSide }),
+    );
+    mark.rotation.x = -Math.PI / 2;
+    mark.position.y = 0.06;
+    mark.visible = false;
+    group.add(mark);
+    // 攻撃力ダウン: 頭の上の矢印
+    const down = textSprite("↓", "#b47cff", 80);
+    down.scale.set(0.9, 0.34, 1);
+    down.position.set(0.9, 2.5, 0);
+    down.visible = false;
+    group.add(down);
     this.scene.add(group);
     const bot: Bot = {
       id, group, body, label, labelCtx: canvas.getContext("2d")!, labelTex, name, mine,
       hpShown: -1, flash: 0, windup: 0, lunge: 0, ko: 0, glow: 0, shield, mats,
+      code, fists, act: null, stars, mark, down,
     };
     this.bots.set(id, bot);
     this.drawLabel(bot, 1, false);
@@ -326,64 +398,248 @@ export class ArenaView {
     }
   }
 
+  // ふだんの攻撃の動き: 話し方×発想で4種類
+  private attackStyle(bot: Bot): ActKind {
+    const [, , steady, brief] = sidesOf(bot.code);
+    if (brief) return steady ? "jab" : "shot";
+    return steady ? "tackle" : "spin";
+  }
+
+  private sparkColor(bot: Bot): number {
+    return sidesOf(bot.code)[1] ? 0xff8fa3 : 0xff9e00;
+  }
+
+  private play(bot: Bot, kind: ActKind, dur: number) {
+    bot.act = { kind, t: 0, dur };
+  }
+
   // 1ステップ分の出来事を演出に変える
   effects(events: BattleEvent[], battle: Battle) {
     for (const ev of events) {
       if (ev.t === "windup") {
         const b = this.bots.get(ev.id);
-        if (b) b.windup = 0.27;
+        if (!b) continue;
+        b.windup = 0.27;
+        // 先回りは跳ねて構え、待機は身をひいて構える
+        if (!b.act) this.play(b, sidesOf(b.code)[0] ? "hop" : "lean", 0.27);
       } else if (ev.t === "hit" || ev.t === "counter") {
         const from = this.bots.get(ev.id);
         const to = this.bots.get(ev.target);
         if (!from || !to) continue;
-        from.lunge = 0.25;
-        to.flash = 0.25;
-        this.beam(from, to, ev.t === "counter" ? 0x5ce1e6 : ev.t === "hit" && ev.crit ? 0xffd166 : 0xff6b6b);
         const crit = ev.t === "hit" && ev.crit;
-        this.float(to, crit ? `会心 ${Math.round(ev.dmg)}` : ev.t === "counter" ? `反撃 ${Math.round(ev.dmg)}` : String(Math.round(ev.dmg)), crit ? "#ffd166" : ev.t === "counter" ? "#5ce1e6" : "#ffffff", crit ? 1.6 : 1);
+        const text = crit ? `会心 ${Math.round(ev.dmg)}` : ev.t === "counter" ? `反撃 ${Math.round(ev.dmg)}` : String(Math.round(ev.dmg));
+        const color = crit ? "#ffd166" : ev.t === "counter" ? "#5ce1e6" : "#ffffff";
+        const land = () => {
+          to.flash = 0.25;
+          this.burst(to.group.position, crit ? 0xffd166 : this.sparkColor(from), crit ? 18 : 8, crit ? 4 : 2.5);
+          this.float(to, text, color, crit ? 1.6 : 1);
+          if (crit) this.shake = Math.max(this.shake, 0.25);
+        };
+        // 必殺技の最中は、技の動きをそのまま続ける
+        const inSkill = !!from.act && from.act.dur > 0.45;
+        if (ev.t === "counter") {
+          if (!inSkill) this.play(from, "jab", 0.25);
+          land();
+        } else if (inSkill) {
+          land();
+        } else {
+          const style = this.attackStyle(from);
+          this.play(from, style, style === "spin" ? 0.4 : 0.28);
+          if (style === "shot") this.shoot(from, to, this.sparkColor(from), 0.18, 0.2, land);
+          else land();
+        }
       } else if (ev.t === "skill") {
         const b = this.bots.get(ev.id);
-        if (b) {
-          b.glow = 0.6;
-          this.float(b, ev.name, "#ffd166", 2.2, 1.6);
-          this.pulse(b);
-        }
+        if (!b) continue;
         const to = ev.target ? this.bots.get(ev.target) : undefined;
-        if (b && to) this.beam(b, to, 0xffd166);
+        b.glow = 0.6;
+        this.float(b, ev.name, "#ffd166", 2.2, 1.6);
+        this.pulse(b.group.position, 0xffd166, 0.6, 6);
+        this.skillAction(b, to, battle);
       } else if (ev.t === "heal") {
         const b = this.bots.get(ev.id);
         if (b && ev.amount > 0) this.float(b, `+${ev.amount}`, "#4ade80", 1.2);
       } else if (ev.t === "miss") {
+        const from = this.bots.get(ev.id);
         const b = this.bots.get(ev.target);
+        if (from && !from.act) this.play(from, this.attackStyle(from), 0.28);
         if (b) this.float(b, "ミス", "#a0a4b8", 0.8);
       } else if (ev.t === "ko") {
         const b = this.bots.get(ev.id);
         if (b) {
           b.ko = 0.001;
+          b.act = null;
           this.float(b, "KO!", "#ff2d55", 1.8);
+          this.burst(b.group.position, 0xff2d55, 24, 5);
+          this.shake = Math.max(this.shake, 0.35);
         }
       }
     }
-    void battle;
   }
 
-  private beam(from: Bot, to: Bot, color: number) {
-    const a = from.group.position.clone().setY(1.3);
-    const b = to.group.position.clone().setY(1.3);
-    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([a, b]), new THREE.LineBasicMaterial({ color, transparent: true }));
-    this.scene.add(line);
-    this.beams.push({ line, life: 0.25 });
+  // 必殺技ごとの動きと効果
+  private skillAction(b: Bot, to: Bot | undefined, battle: Battle) {
+    const kind = SKILLS[b.code]?.kind;
+    const pos = b.group.position;
+    const around = battle.fighters.filter((f) => f.alive && f.id !== b.id && Math.hypot(f.x - pos.x, f.z - pos.z) <= 3.5);
+    switch (kind) {
+      case "haste":
+        this.play(b, "spinFast", 0.6);
+        this.burst(pos, 0xff9e00, 20, 3, 0.2);
+        break;
+      case "heal":
+        this.play(b, "rise", 0.8);
+        this.fountain(pos, 0x4ade80, 24);
+        break;
+      case "multi":
+        this.play(b, "triple", 0.6);
+        if (to) [0, 0.2, 0.4].forEach((d) => setTimeout(() => this.burst(to.group.position, 0xff8fa3, 8, 3), d * 1000));
+        break;
+      case "blast":
+        this.play(b, "slam", 0.6);
+        setTimeout(() => {
+          this.pulse(b.group.position, 0xff4d6d, 0.5, 7, 0.25);
+          this.burst(b.group.position, 0xff4d6d, 30, 6);
+          this.shake = Math.max(this.shake, 0.45);
+        }, 380);
+        break;
+      case "stunHit":
+        this.play(b, "swing", 0.5);
+        if (to) setTimeout(() => this.burst(to.group.position, 0xffd166, 16, 4), 300);
+        break;
+      case "mark":
+        this.play(b, "point", 0.5);
+        if (to) this.shoot(b, to, 0xff2d55, 0.12, 0.25, () => this.pulse(to.group.position, 0xff2d55, 0.5, 3));
+        break;
+      case "smash":
+        this.play(b, "bigSlam", 0.7);
+        if (to) setTimeout(() => {
+          this.burst(to.group.position, 0xffd166, 36, 7);
+          this.pulse(to.group.position, 0xffd166, 0.5, 5);
+          this.shake = Math.max(this.shake, 0.6);
+        }, 450);
+        break;
+      case "swap":
+        this.play(b, "twirl", 0.8);
+        if (to) {
+          this.play(to, "twirl", 0.8);
+          this.shoot(b, to, 0xb47cff, 0.25, 0.5, () => this.burst(to.group.position, 0xb47cff, 14, 3));
+          this.shoot(to, b, 0xb47cff, 0.25, 0.5, () => this.burst(b.group.position, 0xb47cff, 14, 3));
+        }
+        break;
+      case "shield":
+        this.play(b, "guard", 0.6);
+        this.pulse(pos, 0x5ce1e6, 0.5, 3);
+        break;
+      case "hush":
+        this.play(b, "shush", 0.6);
+        this.float(b, "シーッ", "#5ce1e6", 1.6, 1.2);
+        this.pulse(pos, 0x5ce1e6, 0.7, 7, 0.2);
+        break;
+      case "cheer":
+        this.play(b, "cheer", 0.8);
+        this.confetti(pos);
+        break;
+      case "reflect":
+        this.play(b, "twirl", 0.6);
+        this.pulse(pos, 0xff9e00, 0.5, 3);
+        break;
+      case "sharpen":
+        this.play(b, "pulse", 0.6);
+        this.burst(pos, 0xffffff, 16, 2, 1.6);
+        break;
+      case "percent":
+        this.play(b, "point", 0.5);
+        if (to) {
+          this.skyBeam(to.group.position, 0xff2d55);
+          setTimeout(() => this.float(to, "却下", "#ff2d55", 2.4, 1.2), 200);
+        }
+        break;
+      case "warp":
+        this.play(b, "fire", 0.6);
+        if (to) this.shoot(b, to, 0x5ce1e6, 0.3, 0.7, () => {
+          this.burst(to.group.position, 0xff9e00, 40, 7);
+          this.pulse(to.group.position, 0xff9e00, 0.5, 5);
+          this.shake = Math.max(this.shake, 0.5);
+        }, 3);
+        break;
+      case "weaken":
+        this.play(b, "shush", 0.6);
+        for (const f of around) {
+          const o = this.bots.get(f.id);
+          if (o) this.burst(o.group.position, 0x6b3fa0, 14, 1.5, 1.8);
+        }
+        break;
+    }
   }
 
-  private pulse(bot: Bot) {
+  // 空から目標に落ちる光の柱
+  private skyBeam(at: THREE.Vector3, color: number) {
+    const a = at.clone().setY(12);
+    const b = at.clone().setY(0);
+    for (const dx of [-0.08, 0, 0.08]) {
+      const line = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([a.clone().setX(a.x + dx), b.clone().setX(b.x + dx)]),
+        new THREE.LineBasicMaterial({ color, transparent: true }),
+      );
+      this.scene.add(line);
+      this.beams.push({ line, life: 0.5 });
+    }
+    this.burst(at, color, 20, 4);
+  }
+
+  private pulse(at: THREE.Vector3, color: number, life: number, grow: number, y = 0.08) {
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(0.8, 1, 48),
-      new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, side: THREE.DoubleSide }),
+      new THREE.MeshBasicMaterial({ color, transparent: true, side: THREE.DoubleSide }),
     );
     ring.rotation.x = -Math.PI / 2;
-    ring.position.copy(bot.group.position).setY(0.08);
+    ring.position.copy(at).setY(y);
     this.scene.add(ring);
-    this.rings.push({ mesh: ring, life: 0.6 });
+    this.rings.push({ mesh: ring, life, max: life, grow });
+  }
+
+  private spawn(at: THREE.Vector3, color: number, vel: THREE.Vector3, life: number, gravity: number, size = 1) {
+    const mesh = new THREE.Mesh(this.sparkGeo, new THREE.MeshBasicMaterial({ color, transparent: true }));
+    mesh.scale.setScalar(size);
+    mesh.position.copy(at);
+    this.scene.add(mesh);
+    this.particles.push({ mesh, vel, life, max: life, gravity });
+  }
+
+  // 火花が四方に飛ぶ
+  private burst(at: THREE.Vector3, color: number, n: number, speed: number, y = 1.2) {
+    const o = at.clone().setY(y);
+    for (let i = 0; i < n; i++) {
+      const v = new THREE.Vector3(Math.random() - 0.5, Math.random() * 0.8, Math.random() - 0.5).normalize().multiplyScalar(speed * (0.5 + Math.random()));
+      this.spawn(o, color, v, 0.5 + Math.random() * 0.3, 6);
+    }
+  }
+
+  // 下から湧き上がる光（回復）
+  private fountain(at: THREE.Vector3, color: number, n: number) {
+    for (let i = 0; i < n; i++) {
+      const o = at.clone().add(new THREE.Vector3((Math.random() - 0.5) * 1.4, Math.random() * 0.5, (Math.random() - 0.5) * 1.4));
+      this.spawn(o, color, new THREE.Vector3(0, 1.5 + Math.random() * 1.5, 0), 0.9, -0.5, 1.4);
+    }
+  }
+
+  // 紙ふぶき（応援）
+  private confetti(at: THREE.Vector3) {
+    const colors = [0xff4d6d, 0xffd166, 0x4ade80, 0x5ce1e6, 0xb47cff];
+    for (let i = 0; i < 30; i++) {
+      const v = new THREE.Vector3((Math.random() - 0.5) * 3, 4 + Math.random() * 2, (Math.random() - 0.5) * 3);
+      this.spawn(at.clone().setY(2), colors[i % colors.length], v, 1.2, 7, 1.2);
+    }
+  }
+
+  // 飛び道具。届いたら onHit を呼ぶ
+  private shoot(from: Bot, to: Bot, color: number, size: number, dur: number, onHit: () => void, arc = 0.6) {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(size, 12, 8), new THREE.MeshBasicMaterial({ color }));
+    const a = from.group.position.clone().setY(1.2);
+    mesh.position.copy(a);
+    this.scene.add(mesh);
+    this.projectiles.push({ mesh, from: a, to: to.group.position.clone().setY(1.2), t: 0, dur, arc, onHit });
   }
 
   private float(bot: Bot, text: string, color: string, scale: number, life = 1.1) {
@@ -393,6 +649,110 @@ export class ArenaView {
     s.position.x += (Math.random() - 0.5) * 0.6;
     this.scene.add(s);
     this.floaters.push({ sprite: s, life, vy: 1.4 });
+  }
+
+  // 体の動きを1フレーム分あてる（body のローカル座標。+z が相手の方向）
+  private animate(bot: Bot, dt: number) {
+    const body = bot.body;
+    const [l, r] = bot.fists;
+    l.position.set(-0.6, 0.55, 0.15);
+    r.position.set(0.6, 0.55, 0.15);
+    l.scale.setScalar(1);
+    r.scale.setScalar(1);
+    body.rotation.set(0, 0, 0);
+    body.position.x = 0;
+    body.position.z = 0;
+    const act = bot.act;
+    if (!act) return;
+    act.t += dt;
+    const p = Math.min(1, act.t / act.dur);
+    const bump = Math.sin(p * Math.PI); // 0→1→0
+    switch (act.kind) {
+      case "jab":
+        r.position.z = 0.15 + bump * 1.0;
+        r.scale.setScalar(1 + bump * 0.4);
+        break;
+      case "shot":
+        r.position.z = 0.15 + bump * 0.6;
+        body.position.z = -bump * 0.15;
+        break;
+      case "tackle":
+        body.position.z = bump * 1.0;
+        body.rotation.x = bump * 0.35;
+        break;
+      case "spin":
+        body.rotation.y = p * Math.PI * 2;
+        body.position.z = bump * 0.7;
+        l.position.x = -0.6 - bump * 0.4;
+        r.position.x = 0.6 + bump * 0.4;
+        break;
+      case "hop":
+        body.position.y += bump * 0.4;
+        break;
+      case "lean":
+        body.rotation.x = -bump * 0.25;
+        break;
+      case "spinFast":
+        body.rotation.y = p * Math.PI * 4;
+        break;
+      case "rise":
+        body.position.y += bump * 0.6;
+        l.position.y = r.position.y = 0.55 + bump * 0.8;
+        break;
+      case "triple": {
+        const k = (p * 3) % 1;
+        const fist = Math.floor(p * 3) % 2 === 0 ? r : l;
+        fist.position.z = 0.15 + Math.sin(k * Math.PI) * 1.0;
+        body.position.z = Math.sin(k * Math.PI) * 0.2;
+        break;
+      }
+      case "slam":
+        // 跳んで、たたきつける
+        body.position.y += p < 0.6 ? Math.sin((p / 0.6) * Math.PI * 0.5) * 1.8 : 1.8 * Math.pow(1 - (p - 0.6) / 0.4, 3);
+        l.position.y = r.position.y = 0.55 + (p < 0.6 ? 0.9 : 0);
+        break;
+      case "swing":
+        body.rotation.y = -bump * 1.2 + (p > 0.5 ? (p - 0.5) * 4 * Math.PI : 0);
+        r.scale.setScalar(1 + bump * 1.2);
+        r.position.z = 0.15 + bump * 0.6;
+        break;
+      case "point":
+        r.position.set(0.3, 1.0, 0.15 + bump * 1.1);
+        break;
+      case "bigSlam":
+        body.position.y += Math.sin(Math.min(1, p / 0.65) * Math.PI) * 1.4;
+        r.scale.setScalar(1 + bump * 2.5);
+        r.position.set(0.4, 0.55 + bump * 1.2, 0.15 + bump * 0.9);
+        body.rotation.x = p > 0.5 ? (p - 0.5) * 1.2 : 0;
+        break;
+      case "twirl":
+        body.rotation.y = p * Math.PI * 2;
+        body.position.y += bump * 0.8;
+        break;
+      case "guard":
+        l.position.set(-0.15, 0.9, 0.55);
+        r.position.set(0.15, 0.9, 0.55);
+        body.rotation.x = -bump * 0.15;
+        break;
+      case "shush":
+        r.position.set(0, 1.2, 0.75);
+        body.rotation.x = bump * 0.12;
+        break;
+      case "cheer":
+        body.position.y += Math.abs(Math.sin(p * Math.PI * 2)) * 0.6;
+        l.position.set(-0.7, 0.55 + bump * 1.3, 0.1);
+        r.position.set(0.7, 0.55 + bump * 1.3, 0.1);
+        break;
+      case "pulse":
+        body.scale.setScalar(1.1 * (1 + bump * 0.2));
+        break;
+      case "fire":
+        body.position.z = -bump * 0.4;
+        body.rotation.x = -bump * 0.3;
+        r.position.z = 0.15 + bump * 0.5;
+        break;
+    }
+    if (act.t >= act.dur) bot.act = null;
   }
 
   // 毎フレーム: シミュレーションの位置に寄せて描く
@@ -410,19 +770,26 @@ export class ArenaView {
         const target = f.target ? battle!.fighters.find((x) => x.id === f.target) : undefined;
         if (target && f.alive) bot.group.lookAt(target.x, 0, target.z);
         this.drawLabel(bot, f.hp / f.maxHp, f.alive);
-        // 守り・反射は泡、しびれは小刻みにふるえる
+        // 状態の表示: 守り・反射は泡、しびれは星、弱点は赤い輪、攻撃力ダウンは矢印
         bot.shield.visible = f.alive && (f.shield > 0 || f.reflect > 0);
         (bot.shield.material as THREE.MeshBasicMaterial).color.setHex(f.reflect > 0 ? 0xff9e00 : 0x5ce1e6);
-        bot.body.rotation.y = f.stun > 0 ? Math.sin(t * 40) * 0.15 : 0;
+        bot.shield.rotation.y += dt;
+        bot.stars.visible = f.alive && f.stun > 0;
+        bot.stars.rotation.y += dt * 6;
+        bot.mark.visible = f.alive && f.vuln > 0;
+        bot.mark.scale.setScalar(1 + Math.sin(t * 8) * 0.1);
+        bot.down.visible = f.alive && f.weak > 0;
+        bot.down.position.y = 2.5 + Math.sin(t * 5) * 0.1;
       }
       // 待機中・移動中は小さく弾む
       bot.body.position.y = bot.ko ? bot.body.position.y : Math.abs(Math.sin(t * 6 + bot.id.charCodeAt(0))) * 0.08;
-      // ため: ふくらむ。攻撃: 前に出る
       bot.windup = Math.max(0, bot.windup - dt);
-      bot.lunge = Math.max(0, bot.lunge - dt);
       const swell = 1.1 * (bot.windup > 0 ? 1 + (0.27 - bot.windup) * 0.75 : 1);
-      bot.body.scale.setScalar(swell);
-      bot.body.position.z = bot.lunge > 0 ? Math.sin((bot.lunge / 0.25) * Math.PI) * 0.6 : 0;
+      if (!bot.ko) {
+        bot.body.scale.setScalar(swell);
+        this.animate(bot, dt);
+        if (f && f.stun > 0) bot.body.rotation.y += Math.sin(t * 40) * 0.15;
+      }
       bot.flash = Math.max(0, bot.flash - dt);
       bot.glow = Math.max(0, bot.glow - dt);
       for (const m of bot.mats) m.emissive.setHex(bot.flash > 0 ? 0xff2d55 : bot.glow > 0 ? 0x806000 : bot.windup > 0 ? 0x553300 : 0x000000);
@@ -433,6 +800,7 @@ export class ArenaView {
         bot.body.rotation.x = Math.min(Math.PI / 2, bot.ko * 4);
         bot.body.position.y = -Math.max(0, bot.ko - 0.8) * 0.8;
         bot.label.visible = bot.ko < 0.8;
+        bot.shield.visible = bot.stars.visible = bot.mark.visible = bot.down.visible = false;
       }
       if (bot.mine && !bot.ko) {
         this.arrow.visible = true;
@@ -441,6 +809,33 @@ export class ArenaView {
     }
     if (![...this.bots.values()].some((b) => b.mine && !b.ko)) this.arrow.visible = false;
 
+    this.projectiles = this.projectiles.filter((pr) => {
+      pr.t += dt;
+      const k = Math.min(1, pr.t / pr.dur);
+      pr.mesh.position.lerpVectors(pr.from, pr.to, k);
+      pr.mesh.position.y += Math.sin(k * Math.PI) * pr.arc;
+      if (Math.random() < 0.6) this.spawn(pr.mesh.position, (pr.mesh.material as THREE.MeshBasicMaterial).color.getHex(), new THREE.Vector3(0, 0.3, 0), 0.3, 0, 0.7);
+      if (k >= 1) {
+        this.scene.remove(pr.mesh);
+        pr.onHit();
+      }
+      return k < 1;
+    });
+    this.particles = this.particles.filter((pa) => {
+      pa.life -= dt;
+      pa.vel.y -= pa.gravity * dt;
+      pa.mesh.position.addScaledVector(pa.vel, dt);
+      if (pa.mesh.position.y < 0.05) {
+        pa.mesh.position.y = 0.05;
+        pa.vel.multiplyScalar(0.5);
+      }
+      (pa.mesh.material as THREE.MeshBasicMaterial).opacity = pa.life / pa.max;
+      if (pa.life <= 0) {
+        this.scene.remove(pa.mesh);
+        (pa.mesh.material as THREE.Material).dispose();
+      }
+      return pa.life > 0;
+    });
     this.floaters = this.floaters.filter((f) => {
       f.life -= dt;
       f.sprite.position.y += f.vy * dt;
@@ -450,8 +845,8 @@ export class ArenaView {
     });
     this.rings = this.rings.filter((r) => {
       r.life -= dt;
-      r.mesh.scale.setScalar(1 + (0.6 - r.life) * 6);
-      (r.mesh.material as THREE.MeshBasicMaterial).opacity = r.life / 0.6;
+      r.mesh.scale.setScalar(1 + (r.max - r.life) * r.grow);
+      (r.mesh.material as THREE.MeshBasicMaterial).opacity = r.life / r.max;
       if (r.life <= 0) this.scene.remove(r.mesh);
       return r.life > 0;
     });
@@ -476,6 +871,11 @@ export class ArenaView {
       this.camera.position.z += dz;
     }
     this.controls.update();
+    // 大技のときは画面をゆらす
+    this.shake = Math.max(0, this.shake - dt);
+    const off = new THREE.Vector3((Math.random() - 0.5) * this.shake, (Math.random() - 0.5) * this.shake, 0);
+    this.camera.position.add(off);
     this.renderer.render(this.scene, this.camera);
+    this.camera.position.sub(off);
   }
 }
